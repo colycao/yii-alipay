@@ -22,4 +22,8 @@ sdsdsdsdsdsdfdfgvbxcvb
             'notify_url'=>'http://www.***.com/f00/notifyAlipay',  //注意设置权限为Alipay可返回数据
             'show_url'=>'http://www.yeedt.com/',
         ),
+        /*sfddsfdsf
+        sdfdsfdsfsdfsdfsdfsdfds
+        */
+   ),
 ?>
