@@ -1,6 +1,21 @@
 <?php
 class FooController extends Controller
 {
+    /*
+    12345678
+    123456789
+    sdfsdfdsfdgdfgdfgd
+    */
+    
+    public function accessRules()
+    {
+    	return array(
+            array('allow',
+                'actions'=>array('notifyAlipay'),
+                'users'=>array('*'),
+            ),
+        );
+    }
 
     // Server side notification
     public function actionNotifyAlipay() {
