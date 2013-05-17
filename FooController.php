@@ -16,6 +16,63 @@ class FooController extends Controller
             ),
         );
     }
+    
+    public function actionChongzhi($source="",$orderId="",$userId="")
+    {
+        $order = Translate::model()->findByPk($orderId,"user_id=:user_id",array(":user_id"=>Yii::app()->user->id));
+        if($order===null || 0 >= $order->price || "paid" == $order->status)
+            throw new CHttpException(404,'The requested page does not exist.');
+
+        $user = $this->loadModel(Yii::app()->user->id);
+        if($userId !== $user->email){
+            throw new CHttpException(400,'The requested page does not exist.');
+        }
+
+        $model=new ChongzhiForm;
+        $model->money = $order->price - $user->balance;
+        if(isset($_POST['ChongzhiForm']))
+        {
+            $model->attributes=$_POST['ChongzhiForm'];
+            if($model->validate()){
+                $charge_info = $model->attributes;
+                if($charge_info['money'] < $model->money)
+                    throw new CHttpException(400,'支付失败！');
+
+                $charge_info['charge_time'] = time();
+                $charge_info['user_id'] = $user->id;
+
+                $alipay = Yii::app()->alipay;
+                // If starting a guaranteed payment, use AlipayGuaranteeRequest instead
+                $request = new AlipayDirectRequest();
+                $charge = new Charge;
+                $charge->recharge_way = $charge_info['recharge_way'];
+                $charge->user_id = $user->id;
+                $charge->save(false);
+                $charge_info['id'] = $charge->primaryKey; // Prints the last id.
+				
+				if("alipay" !== $charge_info['recharge_way']) {
+					$request->paymethod = "bankPay";
+					$request->defaultbank = $charge_info['recharge_way'];
+				}
+				
+				$request->out_trade_no = $order->type . '-' . $order->id . '-' . $charge_info['id'];
+                $request->subject = "[译点通专业翻译]充值订单号：" . $charge_info['id'];
+                $request->body = "充值" . number_format($charge_info['money'],2) . "元";
+                $request->total_fee = $charge_info['money'];
+                //var_dump($request);exit();
+                // Set other optional params if needed
+                $form = $alipay->buildForm($request);
+                echo $form;
+                exit();
+            }
+        }
+
+		$this->render('chongzhi',array(
+            'model'=>$model,
+            'order'=>$order,
+            'user'=>$user,
+		));
+    }
 
     // Server side notification
     public function actionNotifyAlipay() {
