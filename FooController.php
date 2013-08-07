@@ -58,7 +58,9 @@ class FooController extends Controller
 				$request->out_trade_no = $order->type . '-' . $order->id . '-' . $charge_info['id'];
                 $request->subject = "[译点通专业翻译]充值订单号：" . $charge_info['id'];
                 $request->body = "充值" . number_format($charge_info['money'],2) . "元";
-                $request->total_fee = $charge_info['money'];
+                //格式化金额
+                setlocale(LC_MONETARY, "chinese");
+                $request->total_fee = money_format($charge_info['money'], 2);
                 //var_dump($request);exit();
                 // Set other optional params if needed
                 $form = $alipay->buildForm($request);
