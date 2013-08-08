@@ -42,7 +42,7 @@ class FooController extends Controller
                 $charge_info['user_id'] = $user->id;
 
                 $alipay = Yii::app()->alipay;
-                // If starting a guaranteed payment, use AlipayGuaranteeRequest instead
+                
                 $request = new AlipayDirectRequest();
                 $charge = new Charge;
                 $charge->recharge_way = $charge_info['recharge_way'];
@@ -50,6 +50,7 @@ class FooController extends Controller
                 $charge->save(false);
                 $charge_info['id'] = $charge->primaryKey; // Prints the last id.
 				
+				//支付宝网银接口支付
 				if("alipay" !== $charge_info['recharge_way']) {
 					$request->paymethod = "bankPay";
 					$request->defaultbank = $charge_info['recharge_way'];
