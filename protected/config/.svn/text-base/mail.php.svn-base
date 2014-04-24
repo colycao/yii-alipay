@@ -1,0 +1,15 @@
+<?php
+return array(
+    'class' => 'ext.yii-mail.YiiMail',	//发送邮件扩展类
+    'transportType' => 'smtp',	//邮件服务器类型
+    'transportOptions' => array(
+        'host' => 'smtp.iol8.com',
+        'username' => 'lein@iol8.com',
+        'password' => 'Lein123#@!',
+        'port' => '25',
+        //'encryption'=>'tls',
+    ),
+    'viewPath' => 'application.views.mail',
+    //'logging' => true,
+    //'dryRun' => false,
+);

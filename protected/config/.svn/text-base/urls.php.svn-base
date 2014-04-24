@@ -1,0 +1,42 @@
+<?php
+return array(
+	'urlFormat'=>'path',
+	'showScriptName'=>false,
+	//'urlSuffix' => '/',
+	'rules'=>array(
+        //path
+	    '' => 'path/index',		//首页
+        'fast' => 'path/fast',	//快速翻译
+        'why-fast' => 'path/whyFast',	//使用快速翻译
+        'file' => 'path/file',	//文档翻译
+        'resume' => 'path/resume',	//简历翻译
+	    'webSite' => 'path/webSite',	//网站翻译
+        'about' => 'path/about',	//服务说明
+       	'server' => 'path/server',	//服务条款
+        'contact' => 'path/contact',	//客户留言
+        'example' => 'path/example',	//翻译示例
+        'login' => 'path/login',	//登陆
+        'logout' => 'path/logout',	//退出
+        'reg' => 'path/reg',	//注册
+        'forgetPassword' => 'path/forgetPassword',	//找回密码
+        'passwordSent' => 'path/passwordSent',	//密码重置
+        //会员
+        'panel' => 'user/panel',	//会员面板
+        'referral' => 'user/referral',	//邀请记录
+        'translateResult' => 'user/translateResult',	//翻译记录
+        '<orderId:\d+>/orderResult'=>'user/orderResult',	//订单详情
+        '<orderId:\d+>/orderPay'=>'user/orderPay',	//会员确认订单
+        '<orderId:\d+>/viewOrder'=>'path/viewOrder',	//查看文档订单详情
+        'chargeResult' => 'user/chargeResult',	//交易记录
+        'getUserInfo' => 'user/getUserInfo',	//会员更新联系信息
+        '<id:\d+>/user'=>'user/view',	//查看会员个人信息
+        //代理商
+        'panel' => 'proxy/panel',	//代理商面板
+        'getUserInfo' => 'proxy/getUserInfo',	//修改联系信息
+        'referral' => 'proxy/referral',	//代理商
+
+		//'<controller:\w+>/<id:\d+>'=>'<controller>/view',
+		'<controller:\w+>/<action:\w+>/<id:\d+>'=>'<controller>/<action>',
+		'<controller:\w+>/<action:\w+>'=>'<controller>/<action>',
+	),
+);

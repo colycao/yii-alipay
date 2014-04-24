@@ -1,0 +1,10 @@
+<?php
+return array(
+    'class'=>'application.vendors.alipay.AlipayProxy',	//支付宝扩展类
+    'partner'=>'2088901540450365', //经销商 partner ID
+    'key'=>'eymh76re4tb8ifdw7fipz1j1da3mcma9', // 对应的 KEY
+    'seller_email'=>'zfb@yeedt.com',	//收款帐号
+    'return_url'=>'http://www.lion8.com/user/returnAlipay',	//支付宝浏览器通知路径
+    'notify_url'=>'http://www.lion8.com/user/notifyAlipay',	//支付宝服务器通知路径
+    'show_url'=>'http://www.lion8.com/',	//支付宝付款商品链接
+);

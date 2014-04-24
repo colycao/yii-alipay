@@ -1,0 +1,1037 @@
+<?php
+
+class UserController extends Controller
+{
+	/**
+	 * @var string the default layout for the views. Defaults to '//layouts/column2', meaning
+	 * using two-column layout. See 'protected/views/layouts/column2.php'.
+	 */
+	public $layout='//layouts/column2';
+
+	/**
+	 * @return array action filters
+	 */
+	public $_message = "";
+	public function actions()
+	{
+		return array(
+			// captcha action renders the CAPTCHA image displayed on the contact page
+            /*
+			'captcha'=>array(
+				'class'=>'CCaptchaAction',
+				'backColor'=>0xFFFFFF,
+            ),
+             */
+		);
+	}
+	public function filters()
+	{
+		return array(
+			'accessControl', // perform access control for CRUD operations
+		);
+	}
+
+	/**
+	 * Specifies the access control rules.
+	 * This method is used by the 'accessControl' filter.
+	 * @return array access control rules
+	 */
+	public function accessRules()
+	{
+		return array(
+            array('allow',
+				/*支付宝付款成功后，跳转路径，不能有任何权限*/
+                'actions'=>array('notifyAlipay','returnAlipay','r'),
+                'users'=>array('*'),
+            ),
+			array('allow',
+				/*会员权限列表*/
+                'actions'=>array('panel','r','referral','receiveRebates','translateResult','chargeResult','getUserInfo','orderResult','orderPay','chongzhi','charge','captcha','returnAlipay','download','downloadTDocument'),
+                'roles'=>array('member'),
+			),
+			array('allow',
+				/*客服，译员权限列表*/
+				'actions'=>array('orderFast','orderFile','chargeAdmin','orderResult','orderComments','fastEdit','download','downloadTDocument','checkRates','upload','view','uploadDocument'),
+				'roles'=>array('interpreter','operator'),
+			),
+            array('allow',
+				/*管理员权限列表*/
+                'actions'=>array('admin','update','delete'),
+                'roles'=>array('admin'),
+            ),
+			array('deny',  // deny all users
+				'users'=>array('*'),
+			),
+		);
+	}
+
+	/**
+	 * Displays a particular model.
+	 * @param integer $id the ID of the model to be displayed
+	 */
+	//查看用户信息
+	public function actionView($id)
+	{
+		$this->render('view',array(
+			'model'=>$this->loadModel($id),
+		));
+	}
+
+	//依据订单号$orderId, 查看订单结果
+    public function actionOrderResult($orderId)
+    {
+		//判断当前角色是会员时，订单归属
+        if('member' == Yii::app()->user->roles)
+            $model = Translate::model()->findByPk($orderId,"user_id=:user_id",array(":user_id"=>Yii::app()->user->id));
+        else
+            $model = Translate::model()->findByPk($orderId);
+
+		//订单不属于当前登陆会员，或者订单号不存在，抛出错误
+        if($model === null)
+			    throw new CHttpException(404,'The requested page does not exist.');
+
+		//创建一个评价的模型，生成表单
+        $comment = Comment::model()->findByAttributes(array("translate_id"=>$model->id));
+        if($comment === null){
+		    $comment = new Comment;
+            $comment->level = 1;
+            $comment->type = "evaluate";
+            $comment->create_time = time();
+            $comment->translate_id = $model->id;
+            $comment->user_id = $model->user_id;
+        }
+
+		//如果评论表单提交
+		if(isset($_POST['Comment']))
+		{
+			$comment->attributes=$_POST['Comment'];
+			if($comment->save()){
+                Yii::import('ext.EUserFlash');
+                EUserFlash::setSuccessMessage('提交成功！');
+				$this->refresh();
+            }
+        }
+
+		$this->render('orderResult',array(
+			'model'=>$model,
+            'comment'=>$comment,
+		));
+	}
+
+	//会员确认订单，参数订单号$orderId
+	public function actionOrderPay($orderId, $pay=false)
+    {
+		//依据订单号$orderid，查询订单
+        $model = Translate::model()->findByPk($orderId,"user_id=:user_id",array(":user_id"=>Yii::app()->user->id));
+        //var_dump($model->user['balance']);
+        $user = User::model()->findByPk(Yii::app()->user->id);
+
+		//当订单不存在，或订单价格小于等于0，或订单状态为已支付，都抛出错误
+		if($model === null || 0 >= $model->price || "paid" == $model->status)
+			throw new CHttpException(404,'The requested page does not exist.');
+
+		//当前会员帐户余额是否够支付本订单金额
+		$is_more = $user->balance < $model->price ? false : true;
+
+        if (1 == $pay)
+        {
+            if(!$is_more)
+				//如果余额不足，跳转到支付页面
+				$this->redirect(array('user/chongzhi','orderId'=>$model->id,'userId'=>$user->email));
+            else
+            {
+                $transaction=Yii::app()->db->beginTransaction();
+                try{
+					//余额充足的情况下，支此订单后更新会员帐户的余额
+                    $user->balance -= $model->price;
+                    $user->consumer_state = 'consumed';
+                    $user->save(false);
+
+					//为当前会员生成一条交易纪录
+                    $charge = new Charge;
+                    $charge->chargetype = 0;
+                    $charge->money = $model->price;
+                    $charge->recharge_way = "";
+                    $charge->translate_id = $orderId;
+                    $charge->user_id = Yii::app()->user->id;
+                    $charge->charge_time = time();
+                    //var_dump($charge);exit();
+                    $charge->save(false);
+
+					//更新订单状态为已支付
+                    $model->status = "paid";
+                    $model->save(false);
+                    $transaction->commit(); //提交事务会真正的执行数据库操作
+
+					//发送短信通知客服／译员及时处理已支付的订单
+                    $type = ('fast' == $model->type) ? "快译" : "文档";
+                    $demand = !empty($model->demand) ? '其他需求：' . $model->demand : '';
+                    if(!empty(Yii::app()->params['operatorPhone'])){
+            		    RegForm::sendSms(Yii::app()->params['operatorPhone'],'【雷音快译】有新的' . $type . '订单已付款，订单号：' . $model->id . '；字数：' . $model->word_count . '个。请及时处理！' . $demand);
+		            }
+            		if(!empty(Yii::app()->params['interpreterPhone'])){
+            		    RegForm::sendSms(Yii::app()->params['interpreterPhone'],'【雷音快译】有新的' . $type . '订单已付款，订单号：' . $model->id . '；字数：' . $model->word_count . '个。请及时处理！' . $demand);
+            		}
+                    Yii::import('ext.EUserFlash');
+                    EUserFlash::setSuccessMessage('付款成功！');
+                    $this->redirect(array('orderResult','orderId'=>$model->id));
+                } catch (Exception $e) {
+                    $transaction->rollback();//如果操作失败, 数据回滚
+                }
+            }
+        }
+        $this->render('orderPay',array('model'=>$model, 'is_more'=>$is_more));
+	}
+
+	//快译订单提交译文
+	public function actionFastEdit($orderId)
+	{
+		//判断订单是否存在或有效
+		$model=FastEdit::model()->findByPk($orderId,"type=:type",array(':type'=>"fast"));
+        if($model===null)
+            throw new CHttpException(404,'The requested page does not exist.');
+
+        if(isset($_POST['ajax']) && $_POST['ajax']==='fast-edit-fastedit-form')
+        {
+            echo CActiveForm::validate($model);
+        	Yii::app()->end();
+        }
+
+		if(isset($_POST['FastEdit']))
+		{
+		    $model->attributes=$_POST['FastEdit'];
+            if(!empty($model->translation))
+            {
+				//如译文提交成功，更新订单状态为已完成，并纪录完成时间
+			    $model->status = 'finish';
+                $model->completion_time = time();
+            }
+			if($model->save())
+			{
+				//如果会员留有电话，给会员发短信通知订单已完成，获取翻译结果
+			    $to = $model->phone ? $model->phone : $model->user->phone;
+                if(!empty($to))
+    			    RegForm::sendSms($to,'【雷音快译】恭喜您,快译订单' . $model->id . '已翻译完成！请注意查收。');
+			    Yii::import('ext.EUserFlash');
+                EUserFlash::setSuccessMessage('译文内容提交成功！');
+				$this->redirect(array('orderResult','orderId'=>$model->id));
+			}
+        }
+
+		$this->render('fastEdit',array(
+			'model'=>$model,
+        ));
+    }
+
+	//上传译文文档
+	public function actionUploadDocument($orderId)
+	{
+		$model=UploadDocument::model()->findByPk($orderId,"type=:type",array(':type'=>"file"));
+        if($model===null)
+            throw new CHttpException(404,'The requested page does not exist.');
+
+		if(isset($_POST['ajax']) && $_POST['ajax']==='upload-document-uploadDocument-form')
+		{
+        	echo CActiveForm::validate($model);
+        	Yii::app()->end();
+        }
+
+		if(isset($_POST['UploadDocument']))
+		{
+			$model->attributes=$_POST['UploadDocument'];
+			$documentUpload=CUploadedFile::getInstance($model,'t_document');
+            if($model->validate())
+            {
+				//如译文文档上传成功，更新订单状态
+                $model->t_document = $documentUpload->name;
+                $old_document = $model->t_upload_file_name;
+                $model->t_upload_file_name = date('Ymdhis').rand(100,999).'.'.$documentUpload->extensionName;	//在upload/t目录下存储一个以时间轴和随即数组合的文件名
+                $model->status = 'finish';
+                $model->completion_time = time();
+                if($model->save())
+                {
+					//如译文文档为重新上传，则先删除了对应的旧文档
+                    if($model->t_document !== null)
+                        $documentUpload->saveAs(Yii::getPathOfAlias('webroot').'/upload/t/' . $model->t_upload_file_name);
+                    if(!empty($old_document) && $old_document !== $model->t_upload_file_name)
+                    	unlink(Yii::getPathOfAlias('webroot').'/upload/t/' . $old_document);
+                }
+				//如果会员留有电话，给会员发短信通知订单已完成，获取翻译结果
+    			RegForm::sendSms($model->phone,'【雷音快译】恭喜您,文档订单' . $model->id . '已翻译完成！请注意查收。');
+                Yii::import('ext.EUserFlash');
+                EUserFlash::setSuccessMessage('译文文档上传成功！');
+				$this->refresh();
+            }
+		}
+
+		$this->render('uploadDocument',array(
+			'model'=>$model,
+		));
+	}
+
+	//客服给订单报价，或手动修改订单状态
+	public function actionCheckRates($orderId)
+	{
+		$model=CheckRates::model()->findByPk($orderId);
+        if($model===null)
+            throw new CHttpException(404,'The requested page does not exist.');
+
+		if(isset($_POST['ajax']) && $_POST['ajax']==='check-rates-checkRates-form')
+		{
+        	echo CActiveForm::validate($model);
+        	Yii::app()->end();
+        }
+        if(isset($_POST['CheckRates']))
+        {
+        	$model->attributes=$_POST['CheckRates'];
+        	if($model->validate())
+        	{
+        		if($model->save())
+        		{
+        		    if(0 != $model->word_count && 0 != $model->price)
+        		    {
+						//订单报价后，短信通知会员尽快付款
+                                if(1 == $model->warn){
+                                    if('fast' == $model->type){
+                                        RegForm::sendSms($model->phone,'【雷音快译】您的快译订单已确认，请尽快付款！订单号：' . $model->id . '。价格：' . $model->price . '元');
+                                    }else{
+                                        RegForm::sendSms($model->phone,'【雷音快译】您的文档订单已确认，请尽快付款！订单号：' . $model->id . '。价格：' . $model->price . '元');
+                                    }
+                                }
+        		    }
+        			Yii::import('ext.EUserFlash');
+                	EUserFlash::setSuccessMessage('订单已确认成功！');
+					$this->refresh();
+				}
+        	}
+    	}
+    	$this->render('checkRates',array('model'=>$model));
+	}
+
+	//下载原文文档
+	public function actionDownload($orderId)
+	{
+		$model=Translate::model()->findByPk($orderId, 'document!=:document',array(':document'=>""));
+		if($model===null)
+			throw new CHttpException(404,'The requested page does not exist.');
+
+		$fileName = 'upload/' . $model->upload_file_name;
+		if(!file_exists($fileName))
+            throw new CHttpException(404,'原文文档不存在！');
+
+		$mimeType = pathinfo($fileName, PATHINFO_EXTENSION);
+		if (strpos($_SERVER['HTTP_USER_AGENT'], 'MSIE') or strpos($_SERVER['HTTP_USER_AGENT'], 'Opera'))
+		{
+			//如ie浏览器，增加头部信息
+            $model->document = urlencode($model->document);
+			$mimeType = 'application/x-download';
+		}
+		header('Content-Disposition: attachment; filename=' . $model->document);
+		header('Content-Type: charset=utf-8; ' . $mimeType);
+		header('Content-Length: ' . filesize($fileName));
+		readfile($fileName);
+    }
+
+	//下载译文文档
+	public function actionDownloadTDocument($orderId)
+	{
+		$model=Translate::model()->findByPk($orderId, 'status=:status',array(':status'=>'finish'));
+		if($model===null)
+			throw new CHttpException(404,'The requested page does not exist.');
+
+		$fileName = 'upload/t/' . $model->t_upload_file_name;
+		if(!file_exists($fileName))
+            throw new CHttpException(404,'原文文档不存在！');
+
+		$mimeType = pathinfo($fileName, PATHINFO_EXTENSION);
+		if (strpos($_SERVER['HTTP_USER_AGENT'], 'MSIE') or strpos($_SERVER['HTTP_USER_AGENT'], 'Opera'))
+		{
+            $model->t_document = urlencode($model->t_document);
+			$mimeType = 'application/x-download';
+		}
+		header('Content-Disposition: attachment; filename=' . $model->t_document);
+		header('Content-Type: charset=utf-8; ' . $mimeType);
+		header('Content-Length: ' . filesize($fileName));
+		readfile($fileName);
+	}
+
+	//会员中心，个人面板
+    public function actionPanel()
+    {
+		$this->render('panel',array(
+			'user'=>$this->loadModel(Yii::app()->user->id),
+		));
+    }
+
+	//邀请链接
+    public function actionR()
+    {
+        $i = $_GET['i'];
+        $utm_campaign = "UserReferral";
+        $utm_medium = "(none)";
+        $utm_source = "(none)";
+        $utm_content = str_replace("i",'u',$i);
+        $utm_term = "index";
+        if(Yii::app()->user->isGuest)
+            Yii::app()->session['referrals'] = str_replace("i",'',$i);
+    	$this->redirect(array('path/index',"utm_campaign"=>$utm_campaign,"utm_medium"=>$utm_medium,"utm_source"=>$utm_source,"utm_content"=>$utm_content,"utm_term"=>$utm_term));
+    }
+
+	//会员的邀请记录
+    public function actionReferral()
+    {
+        $model=new Referral('search');
+        $this->render('referralResult',array(
+            'model'=>$model,
+        ));
+    }
+
+	//被邀请人初次消费后，给邀请人返钱
+    public function actionReceiveRebates($referralId)
+    {
+        $referral = Referral::model()->findByPk($referralId,"user_id=:user_id and is_rebates=:is_rebates",array("user_id"=>Yii::app()->user->id,":is_rebates"=>'0'));
+        $user = User::model()->findByPk($referral->yuid);
+        if($referral === null || 'consumed' != $user->consumer_state)
+            throw new CHttpException(404,'The requested page does not exist.');
+        $referral->is_rebates = 1;
+        if ($referral->save())
+        {
+            $charge = new Charge;
+            $charge->chargetype = 1;
+            $order = Translate::model()->findByAttributes(array('user_id'=>$referral->yuid,'status'=>'finish'),array('order'=>'create_time ASC'));
+            $charge->money = $order->price;
+            $charge->charge_time = time();
+            $charge->recharge_way = 'referral';
+            $charge->user_id = Yii::app()->user->id;
+            $charge->save();
+            $user = User::model()->findByPk(Yii::app()->user->id);
+            $user->balance += ($charge->money) * Yii::app()->params['rebate_ratio'];
+            $user->save(false);
+            $this->eUserFlash("领取返利成功！");
+        }
+        $this->redirect(array("user/referral"));
+    }
+
+	//支付订单
+    public function actionChongzhi($source="",$orderId="",$userId="")
+    {
+        $order = Translate::model()->findByPk($orderId,"user_id=:user_id",array(":user_id"=>Yii::app()->user->id));
+        if($order===null || 0 >= $order->price || "paid" == $order->status)
+            throw new CHttpException(404,'The requested page does not exist.');
+
+        $user = $this->loadModel(Yii::app()->user->id);
+        if($userId !== $user->email){
+            throw new CHttpException(400,'The requested page does not exist.');
+        }
+
+        $model=new ChongzhiForm;
+        $model->money = number_format($order->price - $user->balance, 2);
+        if(isset($_POST['ChongzhiForm']))
+        {
+            $model->attributes=$_POST['ChongzhiForm'];
+            if($model->validate()){
+                $charge_info = $model->attributes;
+                if($charge_info['money'] < $model->money)
+                    throw new CHttpException(400,'支付失败！');
+
+                $charge_info['charge_time'] = time();
+                $charge_info['user_id'] = $user->id;
+
+                $alipay = Yii::app()->alipay;
+                // If starting a guaranteed payment, use AlipayGuaranteeRequest instead
+                $request = new AlipayDirectRequest();
+                $charge = new Charge;
+                $charge->recharge_way = $charge_info['recharge_way'];
+                $charge->user_id = $user->id;
+                $charge->save(false);
+                $charge_info['id'] = $charge->primaryKey; // Prints the last id.
+
+                //判断支付宝网银支付模块
+                if("alipay" !== $charge_info['recharge_way']) {
+                    $request->paymethod = "bankPay";	//支付方式
+                    $request->defaultbank = $charge_info['recharge_way'];
+                }
+
+                $request->out_trade_no = $order->type . '-' . $order->id . '-' . $charge_info['id'];	//交易号
+                $request->subject = "[雷音快译]充值订单号：" . $charge_info['id'];	//交易标题
+                $request->body = "充值" . number_format($charge_info['money'],2) . "元";	//交易内容
+                setlocale(LC_MONETARY, "chinese");	//交易金额格式化
+                $request->total_fee = money_format($charge_info['money'],2);
+                //var_dump($request);exit();
+                // Set other optional params if needed
+                $form = $alipay->buildForm($request);
+                echo $form;
+                exit();
+            }
+        }
+
+		$this->render('chongzhi',array(
+            'model'=>$model,
+            'order'=>$order,
+            'user'=>$user,
+		));
+    }
+
+	//会员充值
+    public function actionCharge($source="",$orderId="",$userId="")
+    {
+        $model=new chargeForm;
+        if(isset($_POST['ChargeForm']))
+        {
+            $model->attributes=$_POST['ChargeForm'];
+            if($model->validate()){
+                $charge_info = $_POST['ChargeForm'];
+                $charge_info['charge_time'] = time();
+                $charge_info['user_id'] = Yii::app()->user->id;
+
+                $alipay = Yii::app()->alipay;
+                // If starting a guaranteed payment, use AlipayGuaranteeRequest instead
+                $request = new AlipayDirectRequest();
+                $charge = new Charge;
+                $charge->recharge_way = $charge_info['recharge_way'];
+                $charge->user_id = Yii::app()->user->id;
+                $charge->save(false);
+                $charge_info['id'] = $charge->primaryKey; // Prints the last id.
+                //网银支付模块
+                if("alipay" !== $charge_info['recharge_way']) {
+                    $request->paymethod = "bankPay";
+                    $request->defaultbank = $charge_info['recharge_way'];
+                }
+
+                $request->out_trade_no = 'charge-' . $charge_info['id'];
+                $request->subject = "[雷音快译]充值订单号：" . $charge_info['id'];
+                $request->body = "充值" . number_format($charge_info['money'],2) . "元";
+                setlocale(LC_MONETARY, "chinese");
+                $request->total_fee = money_format($charge_info['money'],2);
+                //var_dump($request);exit();
+                // Set other optional params if needed
+                $form = $alipay->buildForm($request);
+                echo $form;
+                exit();
+            }
+        }
+        $this->render('charge',array(
+            'model'=>$model,
+		));
+    }
+
+	//支付宝服务器端通知
+    public function actionNotifyAlipay() {
+        $alipay = Yii::app()->alipay;
+        if ($alipay->verifyNotify()) {
+            $order_id = $_POST['out_trade_no'];
+            $order_fee = $_POST['total_fee'];
+            if($_POST['trade_status'] == 'TRADE_FINISHED' || $_POST['trade_status'] == 'TRADE_SUCCESS') {
+                if (strpos($order_id, "charge") === false)
+				{
+		            $arr_order_id = explode("-",$order_id);
+		            $orderId = $arr_order_id[1];
+                    $order = Translate::model()->findByPk($orderId);
+					if($order->user_id)
+                    	$this->updateOrderStatus($order_id, $order_fee, $_POST['trade_status']);	//注册用户支付订单
+					else
+						$this->updateFilePayStatus($order_id, $order_fee, $_POST['trade_status']);	//未注册用户支付订单
+				}
+                else
+                    $this->chargeAccount($order_id, $order_fee, $_POST['trade_status']);	//会员充值
+                echo "success";
+            }
+            else {
+                echo "success";
+            }
+        } else {
+            $this->delete_order_record($order_id);
+            //echo "fail";
+            throw new CHttpException(404,'交易失败！');
+            exit();
+        }
+    }
+
+	//支付宝浏览器跳转通知
+    public function actionReturnAlipay() {
+        $alipay = Yii::app()->alipay;
+        if ($alipay->verifyReturn()) {
+            $order_id = $_GET['out_trade_no'];
+            $order_fee = $_GET['total_fee'];
+
+            if($_GET['trade_status'] == 'TRADE_FINISHED' || $_GET['trade_status'] == 'TRADE_SUCCESS') {
+                if (strpos($order_id, "charge") === false)
+				{
+		            $arr_order_id = explode("-",$order_id);
+		            $orderId = $arr_order_id[1];
+                    $order = Translate::model()->findByPk($orderId);
+					if($order->user_id)
+						$this->updateOrderStatus($order_id, $order_fee, $_GET['trade_status']);
+					else {
+	                    Yii::app()->session->add('$orderId',$orderId);
+						$this->updateFilePayStatus($order_id, $order_fee, $_POST['trade_status']);
+					}
+				}
+                else
+                    $this->chargeAccount($order_id, $order_fee, $_GET['trade_status']);
+
+                if(empty($this->_message))
+                    $this->_message = "恭喜您，交易成功！";
+                $this->eUserFlash($this->_message);
+	            $arr_order_id = explode("-",$order_id);
+	            $orderId = $arr_order_id[1];
+                $order = Translate::model()->findByPk($orderId);
+
+				if(strpos($order_id, "file") !== false){
+					//未注册用户文档翻译支付成功后，跳转到翻译-审校页面。
+					$this->redirect(array('/path/translatorReviser', "orderId"=>$orderId, "email"=>$order->email));
+				} else {
+					//注册用户下单支付成功后，跳转到个人中心页面。
+                	$user = User::model()->findByPk($order->user_id);
+                	$this->redirect('/user/panel',array('user'=>$user));
+				}
+            }
+            else {
+                echo "trade_status=".$_GET['trade_status'];
+            }
+        } else {
+            $this->delete_order_record($order_id);
+            //echo "fail";
+            throw new CHttpException(404,'交易失败！');
+            exit();
+        }
+    }
+
+	/**
+	 * Creates a new model.
+	 * If creation is successful, the browser will be redirected to the 'view' page.
+	 */
+/*
+	public function actionCreate()
+	{
+		$model=new User;
+
+		// Uncomment the following line if AJAX validation is needed
+        if(isset($_POST['ajax']) && $_POST['ajax']==='user-form')
+        {
+            echo CActiveForm::validate($model);
+            Yii::app()->end();
+        }
+
+		if(isset($_POST['User']))
+		{
+			$model->attributes=$_POST['User'];
+			if($model->save())
+				$this->redirect(array('view','id'=>$model->id));
+		}
+
+		$this->render('create',array(
+			'model'=>$model,
+		));
+	}
+ */
+	/**
+	 * Updates a particular model.
+	 * If update is successful, the browser will be redirected to the 'view' page.
+	 * @param integer $id the ID of the model to be updated
+	 */
+	//管理员修改用户信息
+	public function actionUpdate($id)
+	{
+		$model = $this->loadModel($id);
+        $model->rebate_ratio = $model->user_center['rebate_ratio'];
+        $model->sharing_ratio = $model->user_center['sharing_ratio'];
+
+		// Uncomment the following line if AJAX validation is needed
+        if(isset($_POST['ajax']) && $_POST['ajax']==='user-form')
+        {
+            echo CActiveForm::validate($model);
+            Yii::app()->end();
+        }
+
+		if(isset($_POST['User']))
+		{
+			$model->attributes=$_POST['User'];
+            if($model->rebate_ratio && $model->sharing_ratio)
+            {
+                $model->user_center['rebate_ratio'] = $model->rebate_ratio;
+                $model->user_center['sharing_ratio'] = $model->sharing_ratio;
+                $model->user_center->save(false);
+            }
+			if($model->save(false))
+				$this->redirect(array('view','id'=>$model->id));
+		}
+
+		$this->render('update',array(
+			'model'=>$model,
+		));
+	}
+
+	//会员修改个人联系方式
+	public function actionGetUserInfo()
+	{
+        //var_dump(Yii::app()->user->id); exit();
+		$model = GetUserInfoForm::model()->findByPk(Yii::app()->user->id);
+		if($model===null)
+			throw new CHttpException(404,'The requested page does not exist.');
+
+        if(isset($_POST['ajax']) && $_POST['ajax']==='get-user-info-form-getUserInfo-form')
+        {
+            echo CActiveForm::validate($model);
+            Yii::app()->end();
+        }
+
+		if(isset($_POST['GetUserInfoForm']))
+		{
+			$model->attributes=$_POST['GetUserInfoForm'];
+            if($model->save())
+            {
+                Yii::app()->user->name = $model->name;
+                /*
+                Yii::app()->user->phone = $model->phone;
+                Yii::app()->user->receive_email = $model->receive_email;
+                if($model->qq)
+                    Yii::app()->user->qq = $model->qq;
+                 */
+                Yii::import('ext.EUserFlash');
+                EUserFlash::setSuccessMessage('您已提交成功！');
+				$this->refresh();
+            }
+		}
+
+		$this->render('getUserInfo',array(
+			'model'=>$model,
+		));
+	}
+
+	/**
+	 * Deletes a particular model.
+	 * If deletion is successful, the browser will be redirected to the 'admin' page.
+	 * @param integer $id the ID of the model to be deleted
+	 */
+	//管理员删除用户帐号
+	public function actionDelete($id)
+	{
+		if(Yii::app()->request->isPostRequest)
+		{
+			// we only allow deletion via POST request
+			$this->loadModel($id)->delete();
+
+			// if AJAX request (triggered by deletion via admin grid view), we should not redirect the browser
+			if(!isset($_GET['ajax']))
+				$this->redirect(isset($_POST['returnUrl']) ? $_POST['returnUrl'] : array('admin'));
+		}
+		else
+			throw new CHttpException(400,'Invalid request. Please do not repeat this request again.');
+	}
+
+	/**
+	 * Lists all models.
+	 */
+	//管理员查看用户列表
+	public function actionIndex()
+	{
+		$dataProvider=new CActiveDataProvider('User');
+		$this->render('index',array(
+			'dataProvider'=>$dataProvider,
+		));
+	}
+
+	/**
+	 * Manages all models.
+	 */
+	//用户管理
+	public function actionAdmin()
+	{
+		$model=new User('search');
+		$model->unsetAttributes();  // clear any default values
+		if(isset($_GET['User']))
+			$model->attributes=$_GET['User'];
+
+		$this->render('admin',array(
+			'model'=>$model,
+		));
+	}
+
+	//会员翻译记录
+    public function actionTranslateResult()
+    {
+		$model=new Translate('search');
+		//$model->unsetAttributes();  // clear any default values
+		if(isset($_GET['Translate']))
+			$model->attributes=$_GET['Translate'];
+
+		$this->render('translateResult',array(
+			'model'=>$model,
+		));
+    }
+
+	//快译订单管理
+    public function actionOrderFast()
+    {
+		$model=new Translate('search');
+                //订单状态
+		$model->status = '';
+		//$model->unsetAttributes();  // clear any default values
+		if(isset($_GET['Translate']))
+			$model->attributes=$_GET['Translate'];
+
+		$this->render('orderFast',array(
+			'model'=>$model,
+		));
+    }
+
+	//文档订单管理
+    public function actionOrderFile()
+    {
+		$model=new Translate('search');
+                //默认订单状态
+		$model->status = '';
+		//$model->unsetAttributes();  // clear any default values
+		if(isset($_GET['Translate']))
+			$model->attributes=$_GET['Translate'];
+
+		$this->render('orderFile',array(
+			'model'=>$model,
+		));
+    }
+
+	//会员交易记录
+    public function actionChargeResult()
+    {
+		$model=new Charge('search');
+        //$model->chargetype = 1;
+
+		if(isset($_GET['Charge']))
+			$model->attributes=$_GET['Charge'];
+
+		$this->render('chargeResult',array(
+			'model'=>$model,
+		));
+    }
+
+	//客服、译员交易查询
+    public function actionChargeAdmin()
+    {
+        $model = new Charge('search');
+
+        if(isset($_GET['Charge']))
+            $model->attributes = $_GET['Charge'];
+
+        $this->render('chargeAdmin', array(
+            'model' => $model,
+        ));
+    }
+
+	//客服、译员订单评价管理
+    public function actionOrderComments()
+    {
+        $model = new Comment('search');
+
+        if(isset($_GET['Comment']))
+            $model->attributes = $_GET['Comment'];
+
+        $this->render('orderComments', array(
+            'model' => $model,
+        ));
+    }
+
+	/**
+	 * Returns the data model based on the primary key given in the GET variable.
+	 * If the data model is not found, an HTTP exception will be raised.
+	 * @param integer the ID of the model to be loaded
+	 */
+	public function loadModel($id)
+	{
+		$model=User::model()->findByPk($id);
+		if($model===null)
+			throw new CHttpException(404,'The requested page does not exist.');
+		return $model;
+    }
+
+	//未注册用户支付文档订单，更新订单状态
+	public function updateFilePayStatus($order_id, $total_fee, $trade_status)
+	{
+		$transaction=Yii::app()->db->beginTransaction();
+        try{
+            $arr_order_id = explode("-",$order_id);
+            $orderId = $arr_order_id[1];	//从交易号获取订单号
+			Yii::app()->session->add('$orderId',$orderId);
+            $order = Translate::model()->findByPk($orderId);
+            if($order===null)
+                throw new CHttpException(404,'交易失败！订单号不存在。');
+
+            $chargeId = $arr_order_id[2];
+            $charge = Charge::model()->findByPk($chargeId);
+            if($charge===null)
+		        throw new CHttpException(404,'交易失败！交易号不存在。');
+            if(0 >= $charge->money && empty($charge->charge_time))
+            {
+        		$charge->chargetype = 0;
+				$charge->money = $total_fee;
+        		$charge->charge_time = time();
+        		//$charge->recharge_way = 'alipay';
+            	if($charge->save(false)){
+                	$order->status = "paid";
+                	$order->save(false);
+        	    	$this->_message = '订单支付成功！';
+                	$type = ('fast' == $order->type) ? "快译" : "文档";
+                	$demand = !empty($order->demand) ? '其他需求：' . $order->demand : '';
+
+					//通知未注册用户订单已经支付，加入手机不为空
+	                if ('file' == $order->type && !empty($order->phone))
+                        RegForm::sendSms($order->phone,'【雷音快译】您的文档订单' . $order->id . '已支付成功，预计完成时间' . $order->finish_time  . '，请注意查收');
+
+					//通知客服订单已经支付
+					if(!empty(Yii::app()->params['operatorPhone'])){
+						RegForm::sendSms(Yii::app()->params['operatorPhone'],'【译点通】有新的' . $type . '订单已付款，订单号：' . $order->id . '；字数：' . $order->word_count . '个。请及时处理！' . $demand);
+                	}
+
+					//通知译员订单已经支付
+	        		if(!empty(Yii::app()->params['interpreterPhone'])){
+						RegForm::sendSms(Yii::app()->params['interpreterPhone'],'【译点通】有新的' . $type . '订单已付款，订单号：' . $order->id . '；字数：' . $order->word_count . '个。请及时处理！' . $demand);
+        			}
+            	}
+			}
+            $transaction->commit(); //提交事务会真正的执行数据库操作
+        } catch (Exception $e) {
+            $transaction->rollback();//如果操作失败, 数据回滚
+        }
+	}
+
+	//注册用户支付订单
+    public function updateOrderStatus($order_id, $total_fee, $trade_status)
+    {
+        $transaction=Yii::app()->db->beginTransaction();
+        try{
+            $arr_order_id = explode("-",$order_id);
+
+            $orderId = $arr_order_id[1];
+            $order = Translate::model()->findByPk($orderId);
+            if($order===null)
+                throw new CHttpException(404,'交易失败！订单号不存在。');
+
+            $chargeId = $arr_order_id[2];
+            $charge = Charge::model()->findByPk($chargeId);
+            if($charge===null)
+		        throw new CHttpException(404,'交易失败！交易号不存在。');
+
+            if(0 >= $charge->money && empty($charge->charge_time))
+            {
+            	$charge->chargetype = 1;
+            	$charge->money = $total_fee;
+            	$charge->charge_time = time();
+            	$charge->recharge_way = 'alipay';
+                if($charge->save(false))
+                {
+                    $user = $this->loadModel($charge->user_id);
+                    if($order->price <= ($user->balance + $total_fee))
+                    {
+                        $user->balance = $user->balance + $total_fee - $order->price;
+                        $user->consumer_state = 'consumed';
+                        if($user->save(false))
+                        {
+                            $charge = new Charge;
+                            $charge->chargetype = 0;
+                            $charge->money = $order->price;
+                            $charge->recharge_way = "";
+                            $charge->translate_id = $order->id;
+                            $charge->user_id = $user->id;
+                            $charge->charge_time = time();
+                            $charge->save(false);
+
+                            $order->status = 'paid';
+                            $order->save(false);
+                    	    $this->_message = '订单支付成功！';
+
+                            $type = ('fast' == $order->type) ? "快译" : "文档";
+                            $demand = !empty($order->demand) ? '其他需求：' . $order->demand : '';
+
+							$order->phone = $order->phone ? $order->phone : $user->phone;
+
+							//通知会员订单已经支付
+			                if ('file' == $order->type && !empty($order->phone))
+                                RegForm::sendSms($order->phone,'【雷音快译】您的文档订单' . $order->id . '已支付成功，预计完成时间' . $order->finish_time  . '，请注意查收');
+
+							//通知客服订单已经支付
+                            if (!empty(Yii::app()->params['operatorPhone'])){
+                    		    RegForm::sendSms(Yii::app()->params['operatorPhone'],'【雷音快译】有新的' . $type . '订单已付款，订单号：' . $order->id . '；字数：' . $order->word_count . '个。请及时处理！' . $demand);
+		                    }
+
+							//通知译员订单已经支付
+            	        	if(!empty(Yii::app()->params['interpreterPhone'])){
+                    		    RegForm::sendSms(Yii::app()->params['interpreterPhone'],'【雷音快译】有新的' . $type . '订单已付款，订单号：' . $order->id . '；字数：' . $order->word_count . '个。请及时处理！' . $demand);
+                    		}
+                        }
+                    } else {
+                        $user->balance += $total_fee;
+                        $user->consumer_state = 'consumed';
+                        $user->save(false);
+
+						//如交易金额不足以支付订单，默认为给会员余额充值
+                	    $this->_message ='余额不足以支付订单！充值金额：' . number_format($total_fee,2) . "元";
+                    }
+                }
+            }
+            $transaction->commit(); //提交事务会真正的执行数据库操作
+        } catch (Exception $e) {
+            $transaction->rollback();//如果操作失败, 数据回滚
+        }
+    }
+
+	//会员充值
+    public function chargeAccount($order_id, $total_fee, $trade_status)
+    {
+        $transaction=Yii::app()->db->beginTransaction();
+        try{
+            $charge = Charge::model()->findByPk(substr($order_id,7));
+            if($charge===null)
+			    throw new CHttpException(404,'交易失败！交易号不存在。');
+
+            if(0 >= $charge->money && empty($charge->charge_time))
+            {
+            	$charge->chargetype = 1;
+            	$charge->money = $total_fee;
+            	$charge->charge_time = time();
+            	$charge->recharge_way = 'alipay';
+            	if($charge->save(false))
+            	{
+           	        $user = User::model()->findByPk($charge->user_id);
+    	            $user->balance += $total_fee;
+                    $user->consumer_state = 'consumed';
+                    $user->save(false);
+
+            	    $this->_message = '充值成功！';
+            	}
+            }
+            $transaction->commit(); //提交事务会真正的执行数据库操作
+        } catch (Exception $e) {
+            $transaction->rollback();//如果操作失败, 数据回滚
+        }
+    }
+
+	//删除交易记录
+    public function delete_order_record($order_id)
+    {
+    	$charge_id = substr($order_id,7);
+    	$charge = Charge::model()->findByPk($charge_id,"money=:money",array(":money"=>""));
+    	if ($charge)
+    		$charge->delete($charge_id);
+    }
+
+	/**
+	 * Performs the AJAX validation.
+	 * @param CModel the model to be validated
+	 */
+	//ajax请求
+	protected function performAjaxValidation($model)
+	{
+		if(isset($_POST['ajax']) && $_POST['ajax']==='user-form')
+		{
+			echo CActiveForm::validate($model);
+			Yii::app()->end();
+		}
+	}
+
+	//弹出提示
+	public function eUserFlash($_message)
+	{
+	    Yii::import('ext.EUserFlash');
+	    EUserFlash::setSuccessMessage($_message);
+	}
+}

@@ -1,0 +1,24 @@
+<?php //本配置文件由后台生成 WebSiteController 4+080031 
+return Array
+	(
+        //首页主菜单显示的客服电话／邮箱
+        'main_400' => '400-8855-131',
+        'main_email' => 'lein@iol8.com',
+        //客服联系方式
+        'adminEmail'=>'lein@iol8.com',
+        'operatorEmail'=>'2423924026@qq.com',
+        'operatorPhone' => '15927501189',
+		//译员联系方式
+        'interpreterEmail'=>'68535309@qq.com',
+        'interpreterPhone'=>'18602706688',
+        //上传文档
+        'upload_file_path' => '/upload/',
+        't_upload_file_path' => '/upload/t/',
+		'is_verifyEmail' => false,              //注册是否要求验证邮箱
+		'priceForFast' => '0.30',               //快速翻译价格
+        'rebate_ratio' => '0.10',               //邀请返利比率
+        //短信网关
+		'sendSms_url' => 'http://service.winic.org/sys_port/gateway/',
+		'sendSms_id' => 'transn',
+		'sendSms_pwd' => 'ts123456',
+    );

@@ -1,0 +1,12 @@
+<?php
+
+// This is the configuration for yiic console application.
+// Any writable CConsoleApplication properties can be configured here.
+return array(
+	'connectionString' => 'mysql:host=localhost;dbname=lion8com',
+	'emulatePrepare' => true,
+	'username' => 'lion8com',
+	'password' => 'u3f9m8k2d8',
+	'charset' => 'utf8',
+	'tablePrefix'=>'t_',
+);
