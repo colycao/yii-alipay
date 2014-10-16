@@ -1,17 +1,18 @@
 <?php
 class FooController extends Controller
 {
-    /*
-    12345678
-    123456789
-    sdfsdfdsfdgdfgdfgd
-    */
+    public function filters()
+    {
+        return array(
+            'accessControl',
+        );
+    }
     
     public function accessRules()
     {
     	return array(
             array('allow',
-                'actions'=>array('notifyAlipay'),
+                'actions'=>array('notifyAlipay'),	//确定支付宝服务器能请求到的，不需要权限
                 'users'=>array('*'),
             ),
         );
@@ -50,13 +51,14 @@ class FooController extends Controller
                 $charge->save(false);
                 $charge_info['id'] = $charge->primaryKey; // Prints the last id.
 				
-				//支付宝网银接口支付
-				if("alipay" !== $charge_info['recharge_way']) {
-					$request->paymethod = "bankPay";
-					$request->defaultbank = $charge_info['recharge_way'];
-				}
+		//支付宝网银接口支付
+		if("alipay" !== $charge_info['recharge_way'])
+		{
+		    $request->paymethod = "bankPay";
+		    $request->defaultbank = $charge_info['recharge_way'];
+		}
 				
-				$request->out_trade_no = $order->type . '-' . $order->id . '-' . $charge_info['id'];
+		$request->out_trade_no = $order->type . '-' . $order->id . '-' . $charge_info['id'];
                 $request->subject = "[译点通专业翻译]充值订单号：" . $charge_info['id'];
                 $request->body = "充值" . number_format($charge_info['money'],2) . "元";
                 //格式化金额
