@@ -10,7 +10,7 @@ return array(
         	'return_url'=>'http://www.***.com/foo/returnAlipay',  
         	'notify_url'=>'http://www.***.com/foo/notifyAlipay',  //注意设置权限为Alipay可返回数据
         	'show_url'=>'http://www.yeedt.com/',
+        	/************************/
         ),
-        /************************/
    ),
 ?>
